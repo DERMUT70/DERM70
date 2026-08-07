@@ -2406,6 +2406,50 @@ def apply_htf_trend_guard(analysis, symbol, htf_context):
         analysis['reasoning'] = f"{analysis.get('reasoning', '')} Note: the higher-timeframe trend is {expected_bias.lower()}, so this countertrend idea carries reduced conviction and needs strong structural confirmation."
     return analysis
 
+# Market fallback uses the desk picture and microstructure to generate a clean, non-news reasoning block.
+def build_market_fallback_analysis(symbol, m10, swings, pair_config, dxy_context, news_context, candles=None, phase_context=None, live_price=None, htf_context=None, picture=None, firm=None, firm_notes=None, learning=None, historical_context=None):
+    current_price = live_price if live_price is not None else float(m10['Close'].iloc[-1])
+    micro = calculate_microstructure(m10)
+    phase_context = phase_context or detect_market_phase(m10, swings=swings)
+    if picture is None:
+        picture = build_mtf_picture({'M10': m10}, symbol)
+    if firm is None:
+        firm, firm_notes = resolve_firm_direction(symbol, picture)
+    confluence = detect_directional_confluence(m10, swings=swings, htf_context=htf_context, dxy_context=dxy_context, symbol=symbol)
+    direction = confluence.get('direction') or firm
+    if direction is None:
+        direction = 'BUY' if micro.get('momentum') == 'BULLISH' else 'SELL'
+    bias = 'BULLISH' if direction == 'BUY' else 'BEARISH'
+    evidence = confluence.get('bullish_evidence') if direction == 'BUY' else confluence.get('bearish_evidence')
+    reasoning_parts = [f"Fallback market analysis supports {direction}: " + '; '.join(evidence[:6]) + '.']
+    if phase_context.get('phase'):
+        reasoning_parts.append(f"The market phase is {phase_context['phase']}, with {phase_context.get('reason', 'structure being assessed')}.")
+    if firm:
+        reasoning_parts.append(f"Standing desk bias is {firm} based on higher-timeframe alignment and momentum.")
+    if historical_context:
+        reasoning_parts.append(f"Historical price context: {historical_context}")
+    reasoning_parts.append(f"Microstructure: VWAP {micro.get('price_vs_vwap', 'NEUTRAL')}, RVOL {micro.get('rvol', 0):.2f}, momentum {micro.get('momentum', 'NEUTRAL')}.")
+    if phase_context.get('entry_quality') == 'late':
+        reasoning_parts.append("The entry is late and the move is already underway, so this is a lower-conviction setup.")
+    full_reasoning = ' '.join(reasoning_parts)
+    score = max(MINIMUM_CONFLUENCE_SCORE, min(78, 68 + (2 if abs(picture.get('score', 0)) >= 3 else 0)))
+    return {
+        'bias': bias,
+        'signal': direction,
+        'confluence_score': score,
+        'confidence': 'LOW',
+        'dxy_correlation': 'CONFIRMING' if dxy_context else 'NEUTRAL',
+        'microstructure_read': f"VWAP {micro.get('price_vs_vwap', 'NEUTRAL')} | RVOL {micro.get('rvol', 0):.2f} | Momentum {micro.get('momentum', 'NEUTRAL')}",
+        'pre_news_bias': news_context.get('pre_news_bias', 'N/A'),
+        'reasoning': full_reasoning,
+        'rejection_reason': None,
+        'structural_score': 60,
+        'score_reason': 'Fallback market model using MTF directional evidence.',
+        'candidate_direction': direction,
+        'levels_source': 'PYTHON',
+        'historical_pattern': historical_context or '',
+    }
+
 # FIX: For news signals, direction-only (no Entry/SL/TP). Direction comes from firm desk bias.
 def build_pre_news_fallback_analysis(symbol, m10, swings, pair_config, dxy_context, news_context, candles=None, phase_context=None, live_price=None, htf_context=None, picture=None, firm=None, firm_notes=None, learning=None, historical_context=None):
     """Python-only fallback for news signals. Direction-only (no Entry/SL/TP).
@@ -2604,7 +2648,10 @@ def analyze_symbol_premium(symbol, all_data, news_override=None):
         analysis['market_state'] = analysis.get('market_state') or setup_context['setup_type']
         update_market_state(analysis.get('market_state') or setup_context['setup_type'])
         if analysis.get('signal') == 'WAIT' and (analysis.get('rejection_reason') in {'Missing Gemini API Key.', 'RATE_LIMIT', 'PARSE_ERROR'} or not analysis.get('rejection_reason')):
-            analysis = build_pre_news_fallback_analysis(symbol, m10, swings, pair_config, dxy_context, news_context, candles=candles, phase_context=phase_context, live_price=current_price, htf_context=htf_context, picture=picture, firm=firm, firm_notes=firm_notes, learning=None, historical_context=historical_context)
+            if news_override:
+                analysis = build_pre_news_fallback_analysis(symbol, m10, swings, pair_config, dxy_context, news_context, candles=candles, phase_context=phase_context, live_price=current_price, htf_context=htf_context, picture=picture, firm=firm, firm_notes=firm_notes, learning=None, historical_context=historical_context)
+            else:
+                analysis = build_market_fallback_analysis(symbol, m10, swings, pair_config, dxy_context, news_context, candles=candles, phase_context=phase_context, live_price=current_price, htf_context=htf_context, picture=picture, firm=firm, firm_notes=firm_notes, learning=None, historical_context=historical_context)
         analysis['estimated_tokens'] = analysis.get('estimated_tokens', estimated_tokens)
         # ── NEWS SIGNAL PATH: direction-only, skip entry/SL/TP enforcement ──
         if news_override:
@@ -2919,7 +2966,7 @@ with tab1:
             firm_local, firm_notes_local = resolve_firm_direction(symbol, pic_local)
             learn_local = learning_note(symbol)
             historical_context_local = build_historical_context(m10_local)
-            return build_pre_news_fallback_analysis(symbol, m10_local, swings_local, pair_config_local, dxy_context_local, {'within_2h': False}, htf_context=htf_local, picture=pic_local, firm=firm_local, firm_notes=firm_notes_local, learning=learn_local, historical_context=historical_context_local)
+            return build_market_fallback_analysis(symbol, m10_local, swings_local, pair_config_local, dxy_context_local, {'within_2h': False}, htf_context=htf_local, picture=pic_local, firm=firm_local, firm_notes=firm_notes_local, learning=learn_local, historical_context=historical_context_local)
         return {'signal': 'WAIT', 'confidence': 'LOW', 'confluence_score': MINIMUM_CONFLUENCE_SCORE, 'rejection_reason': 'Data unavailable for fallback'}
     if st.button("🔍 Run Macro Analysis Now", type="secondary", disabled=st.session_state.bot_running):
         try:

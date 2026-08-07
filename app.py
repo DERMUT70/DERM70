@@ -2167,13 +2167,34 @@ def call_gpt(system_prompt, user_content, max_tokens=2000, retry_count=0, estima
                 continue
             res_data = res.json()
             content = res_data['choices'][0]['message'].get('content', '')
+            # strip code fences
             content = re.sub(r'^```(?:json)?\s*', '', content, flags=re.IGNORECASE)
             content = re.sub(r'\s*```$', '', content).strip()
-            content = re.sub(r',\s*([}\]])', r'\1', content)
-            result = json.loads(content)
-            result['model_used'] = model
-            result['estimated_tokens'] = estimated_tokens
-            return result
+            # Try to parse the returned content as JSON. Be resilient to extra text.
+            try:
+                cleaned = re.sub(r',\s*([}\]])', r'\1', content)
+                result = json.loads(cleaned)
+                result['model_used'] = model
+                result['estimated_tokens'] = estimated_tokens
+                return result
+            except Exception:
+                # Attempt to extract a JSON object substring from the content
+                first = content.find('{')
+                last = content.rfind('}')
+                if first != -1 and last != -1 and last > first:
+                    substring = content[first:last+1]
+                    try:
+                        substring_clean = re.sub(r',\s*([}\]])', r'\1', substring)
+                        result = json.loads(substring_clean)
+                        result['model_used'] = model
+                        result['estimated_tokens'] = estimated_tokens
+                        result['_extracted_from'] = 'substring'
+                        result['_raw_output'] = content
+                        return result
+                    except Exception:
+                        pass
+                # Final fallback: return a structured WAIT response containing the raw content
+                return {"signal": "WAIT", "confluence_score": 0, "confidence": "LOW", "rejection_reason": "PARSE_ERROR", "raw_output": content, "estimated_tokens": estimated_tokens}
         except json.JSONDecodeError:
             continue
         except Exception as e:
@@ -2557,7 +2578,7 @@ def analyze_symbol_premium(symbol, all_data, news_override=None):
         analysis['setup_context'] = setup_context
         analysis['market_state'] = analysis.get('market_state') or setup_context['setup_type']
         update_market_state(analysis.get('market_state') or setup_context['setup_type'])
-        if analysis.get('signal') == 'WAIT' and (analysis.get('rejection_reason') in {'Missing Gemini API Key.', 'RATE_LIMIT'} or not analysis.get('rejection_reason')):
+        if analysis.get('signal') == 'WAIT' and (analysis.get('rejection_reason') in {'Missing Gemini API Key.', 'RATE_LIMIT', 'PARSE_ERROR'} or not analysis.get('rejection_reason')):
             analysis = build_pre_news_fallback_analysis(symbol, m10, swings, pair_config, dxy_context, news_context, candles=candles, phase_context=phase_context, live_price=current_price, htf_context=htf_context, picture=picture, firm=firm, firm_notes=firm_notes, learning=None, historical_context=historical_context)
         analysis['estimated_tokens'] = analysis.get('estimated_tokens', estimated_tokens)
         # ── NEWS SIGNAL PATH: direction-only, skip entry/SL/TP enforcement ──

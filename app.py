@@ -1,4 +1,4 @@
-import os, json, requests, time, re, random, traceback, uuid
+import os, json, requests, time, re, random, traceback, uuid, html
 from datetime import datetime, timezone, timedelta
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
@@ -1401,9 +1401,12 @@ if 'learning_stats' not in st.session_state: st.session_state.learning_stats = {
 
 def get_secret(name, default=""):
     try:
-        return st.secrets.get(name, default)
+        value = st.secrets.get(name, None)
+        if value:
+            return value
     except Exception:
-        return default
+        pass
+    return os.environ.get(name, default)
 
 try:
     query_params = {k: v[0] for k, v in st.query_params.to_dict().items()}
@@ -1444,6 +1447,11 @@ def clear_notifications():
 def debug_log(message, exc_info=False):
     return
 
+def _escape_telegram_html(text):
+    if text is None:
+        return ''
+    return html.escape(str(text), quote=False)
+
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print("Telegram not configured: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing")
@@ -1472,14 +1480,16 @@ def build_telegram_signal_message(symbol, result):
     tp_value = tp_values[0] if tp_values else 'N/A'
     score = result.get('confluence_score', 0)
     event_time = result.get('news_time') or 'now'
+    signal = _escape_telegram_html(result.get('signal'))
+    reasoning = _escape_telegram_html(result.get('reasoning'))
     return (f"🌍 <b>DER-AI MACRO SIGNAL</b>\n"
-            f"📊 <b>{symbol}</b> - {result.get('signal')}\n"
+            f"📊 <b>{_escape_telegram_html(symbol)}</b> - {signal}\n"
             f"🗂️ Event: Live market Analysis\n"
-            f"⏰ Time: {event_time}\n"
+            f"⏰ Time: {_escape_telegram_html(event_time)}\n"
             f"📈 Score: {score}/100\n"
-            f"💰 Entry: {result.get('entry')} | 🛑 SL: {result.get('stop_loss')} | 🎯 TP: {tp_value}\n"
-            f"📈 DXY: {result.get('dxy_correlation')}\n"
-            f"🧠 {result.get('reasoning')}")
+            f"💰 Entry: {_escape_telegram_html(result.get('entry'))} | 🛑 SL: {_escape_telegram_html(result.get('stop_loss'))} | 🎯 TP: {_escape_telegram_html(tp_value)}\n"
+            f"📈 DXY: {_escape_telegram_html(result.get('dxy_correlation'))}\n"
+            f"🧠 {reasoning}")
 
 # ── Pair-Specific Configuration & Structural Scoring ─────────────────────────
 # FIX: cooldown 10 -> 30 so a good setup is not re-signalled every cycle.
@@ -1927,32 +1937,33 @@ def build_news_event_telegram(event, results, now):
     event_time_str = event.get('time', 'N/A')
     lines = [
         "📰 <b>DER-AI NEWS IMPACT SIGNAL</b>",
-        f"📌 Event: {event.get('event')}",
-        f"🕒 Event time: {event_time_str}",
-        f"⏳ Sent {lead} before the release (once per event)",
+        f"📌 Event: {_escape_telegram_html(event.get('event'))}",
+        f"🕒 Event time: {_escape_telegram_html(event_time_str)}",
+        f"⏳ Sent {_escape_telegram_html(lead)} before the release (once per event)",
         "",
     ]
     for symbol, a in results.items():
         sig = a.get('signal', 'SKIPPED')
+        symbol_escaped = _escape_telegram_html(symbol)
         if sig in ('BUY', 'SELL'):
             sig_emoji = "🟢" if sig == 'BUY' else "🔴"
-            lines.append(f"{sig_emoji} <b>{symbol}</b>: {sig}")
-            # Show historical pattern if available (full)
+            lines.append(f"{sig_emoji} <b>{symbol_escaped}</b>: {_escape_telegram_html(sig)}")
             hist_pattern = a.get('historical_pattern', '')
-            if hist_pattern:
-                lines.append(f"📚 Historical: {hist_pattern}")
             reason = (a.get('reasoning') or '').strip()
-            if reason:
-                lines.append(f"🧠 {reason}")
+            reason_escaped = _escape_telegram_html(reason)
+            if hist_pattern and hist_pattern not in reason:
+                lines.append(f"📚 Historical: {_escape_telegram_html(hist_pattern)}")
+            if reason_escaped:
+                lines.append(f"🧠 {reason_escaped}")
             lines.append("")
         elif sig == 'WAIT':
-            lines.append(f"⚪ <b>{symbol}</b>: WAIT")
+            lines.append(f"⚪ <b>{symbol_escaped}</b>: WAIT")
             why = (a.get('rejection_reason') or a.get('reasoning') or 'No actionable edge.').strip()
             if why:
-                lines.append(f"🧠 {why}")
+                lines.append(f"🧠 {_escape_telegram_html(why)}")
             lines.append("")
         else:
-            lines.append(f"⚪ <b>{symbol}</b>: skipped ({a.get('reason', 'rate limit')})")
+            lines.append(f"⚪ <b>{symbol_escaped}</b>: skipped ({_escape_telegram_html(a.get('reason', 'rate limit'))})")
             lines.append("")
     return "\n".join(lines)
 

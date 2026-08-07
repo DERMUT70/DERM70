@@ -1923,19 +1923,19 @@ def build_news_event_telegram(event, results, now):
         if sig in ('BUY', 'SELL'):
             sig_emoji = "🟢" if sig == 'BUY' else "🔴"
             lines.append(f"{sig_emoji} <b>{symbol}</b>: {sig}")
-            # Show historical pattern if available
+            # Show historical pattern if available (full)
             hist_pattern = a.get('historical_pattern', '')
             if hist_pattern:
-                lines.append(f"📚 Historical: {hist_pattern[:200]}")
+                lines.append(f"📚 Historical: {hist_pattern}")
             reason = (a.get('reasoning') or '').strip()
             if reason:
-                lines.append(f"🧠 {reason[:400]}")
+                lines.append(f"🧠 {reason}")
             lines.append("")
         elif sig == 'WAIT':
             lines.append(f"⚪ <b>{symbol}</b>: WAIT")
             why = (a.get('rejection_reason') or a.get('reasoning') or 'No actionable edge.').strip()
             if why:
-                lines.append(f"🧠 {why[:300]}")
+                lines.append(f"🧠 {why}")
             lines.append("")
         else:
             lines.append(f"⚪ <b>{symbol}</b>: skipped ({a.get('reason', 'rate limit')})")

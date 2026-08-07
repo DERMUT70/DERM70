@@ -1312,6 +1312,7 @@ MANDATORY ANALYSIS RULES:
    - Current positioning (for/against the expected move)
    - Final directional edge (long/short/neutral)
 3. Be SPECIFIC about historical patterns - cite specific previous releases and reactions
+4. ALWAYS USE THE PROVIDED HISTORICAL CONTEXT: explicitly cite the last 3-4 releases (previous, consensus, actual, surprise) from the `HISTORICAL CONTEXT` field included in the DATA PROVIDED. If precise release numbers are not available in the field, state that explicitly and infer the pattern from the summary.
 4. Be SPECIFIC about current positioning - cite specific levels and indicators
 5. Be SPECIFIC about the expected reaction - cite the mechanism and timing
 6. Output BUY or SELL when there is a clear directional edge
@@ -2503,8 +2504,10 @@ def analyze_symbol_premium(symbol, all_data, news_override=None):
             missing_key = str(exc).strip("'")
             prompt_text = prompt_template.format(**{**all_format_kwargs, missing_key: f"[missing:{missing_key}]"})
         user_content = [{"type": "text", "text": prompt_text}]
-        estimated_tokens = estimate_analysis_tokens("You are an Elite Macro Analyst. Output ONLY valid JSON.", user_content)
-        analysis = call_gpt("You are an Elite Macro Analyst. Output ONLY valid JSON.", user_content, max_tokens=2000, estimated_tokens=estimated_tokens)
+        # Use the full instruction template as the system prompt so the model treats
+        # the news/market analysis rules as authoritative system-level behavior.
+        estimated_tokens = estimate_analysis_tokens(prompt_template, user_content)
+        analysis = call_gpt(prompt_template, user_content, max_tokens=2000, estimated_tokens=estimated_tokens)
         analysis.setdefault('microstructure_read', prompt_micro)
         analysis.setdefault('rsi_context', rsi_context)
         analysis.setdefault('dxy_summary', dxy_summary)

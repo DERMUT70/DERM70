@@ -1445,10 +1445,24 @@ def debug_log(message, exc_info=False):
     return
 
 def send_telegram_message(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID: return False
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram not configured: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID missing")
+        return False
     try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage", json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"}, timeout=10)
-        return True
+        resp = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "HTML"},
+            timeout=10
+        )
+        try:
+            data = resp.json()
+        except Exception:
+            data = None
+        if resp.status_code == 200 and (data is None or data.get('ok', True)):
+            return True
+        else:
+            print(f"Telegram send failed: status={resp.status_code} body={resp.text}")
+            return False
     except Exception as e:
         print(f"Telegram error: {e}")
         return False

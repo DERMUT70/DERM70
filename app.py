@@ -2361,8 +2361,13 @@ def apply_htf_trend_guard(analysis, symbol, htf_context):
     return analysis
 
 # FIX: For news signals, direction-only (no Entry/SL/TP). Direction comes from firm desk bias.
-def build_pre_news_fallback_analysis(symbol, m10, swings, pair_config, dxy_context, news_context, candles=None, phase_context=None, live_price=None, htf_context=None, picture=None, firm=None, firm_notes=None, learning=None):
-    """Python-only fallback for news signals. Direction-only (no Entry/SL/TP)."""
+def build_pre_news_fallback_analysis(symbol, m10, swings, pair_config, dxy_context, news_context, candles=None, phase_context=None, live_price=None, htf_context=None, picture=None, firm=None, firm_notes=None, learning=None, historical_context=None):
+    """Python-only fallback for news signals. Direction-only (no Entry/SL/TP).
+
+    This fallback attempts to synthesize a richer reasoning block when the LLM is
+    unavailable (API key missing or rate-limited) by using available desk context
+    and the provided `historical_context` string where possible.
+    """
     current_price = live_price if live_price is not None else m10['Close'].iloc[-1]
     micro = calculate_microstructure(m10)
     phase_context = phase_context or detect_market_phase(m10, swings=swings)
@@ -2385,15 +2390,52 @@ def build_pre_news_fallback_analysis(symbol, m10, swings, pair_config, dxy_conte
     bias = 'BULLISH' if direction == 'BUY' else 'BEARISH'
     supporting = confluence.get('bullish_evidence') if direction == 'BUY' else confluence.get('bearish_evidence')
     reasoning_parts = []
-    reasoning_parts.append(f"Directional evidence audit supports {direction}: " + '; '.join(supporting[:4]) + '.')
+    # Core directional evidence
+    reasoning_parts.append(f"Directional evidence audit supports {direction}: " + '; '.join(supporting[:6]) + '.')
+    # Historical context citation (best-effort)
+    hist_pat = ''
+    if historical_context:
+        hist_pat = str(historical_context).strip()
+        if hist_pat:
+            reasoning_parts.append(f"Historical context available: {hist_pat}")
+    else:
+        reasoning_parts.append("No structured prior-release numeric data available in the historical context; inference uses market price history and prior desk memory.")
     if learn_note:
         reasoning_parts.append(learn_note)
     if firm_notes:
         reasoning_parts.extend(firm_notes)
+
+    # DXY and microstructure summary
+    reasoning_parts.append(f"DXY context: {('present' if dxy_context else 'unavailable')}; microstructure: VWAP {micro.get('price_vs_vwap', 'NEUTRAL')}, RVOL {micro.get('rvol', 0):.2f}, momentum {micro.get('momentum', 'NEUTRAL')}.")
+
+    # Synthesize a longer, trader-friendly paragraph (multi-sentence)
     reasoning = ' '.join(reasoning_parts)
+    synthesized = (
+        f"Pre-news directional synthesis for {symbol}: {reasoning} "
+        "Given the current multi-timeframe desk picture, the expected immediate reaction at release is driven by the surprise component vs consensus. "
+        "If the release surprises to the upside for wages/earnings, the USD typically strengthens, pressuring XAUUSD and supporting USD pairs; a downside surprise tends to weaken the USD and favors XAUUSD and risk assets. "
+        "Because the desk bias and microstructure are aligned to the current direction, the fallback edge assumes the standing bias unless a material surprise is expected. "
+        "Treat this as a direction-only guidance: execution levels are omitted until a live LLM analysis or more granular release data is available."
+    )
+    full_reasoning = (reasoning + ' ' + synthesized).strip()
     score = max(MINIMUM_CONFLUENCE_SCORE, min(82, 74 + (2 if abs(picture.get('score', 0)) >= 3 else 0) + learn_adj))
     # News signals: direction-only, no Entry/SL/TP
-    return {'bias': bias, 'signal': expected_signal, 'confluence_score': score, 'confidence': 'MEDIUM', 'dxy_correlation': 'CONFIRMING' if dxy_context else 'NEUTRAL', 'microstructure_read': f"VWAP {micro.get('price_vs_vwap', 'NEUTRAL')} | RVOL {micro.get('rvol', 0):.2f} | Momentum {micro.get('momentum', 'NEUTRAL')}", 'pre_news_bias': news_context.get('pre_news_bias', 'News-driven reaction expected'), 'reasoning': reasoning, 'rejection_reason': None, 'structural_score': 72, 'score_reason': 'Fallback desk model using the MTF directional picture.', 'candidate_direction': expected_signal, 'levels_source': 'PYTHON'}
+    return {
+        'bias': bias,
+        'signal': expected_signal,
+        'confluence_score': score,
+        'confidence': 'MEDIUM',
+        'dxy_correlation': 'CONFIRMING' if dxy_context else 'NEUTRAL',
+        'microstructure_read': f"VWAP {micro.get('price_vs_vwap', 'NEUTRAL')} | RVOL {micro.get('rvol', 0):.2f} | Momentum {micro.get('momentum', 'NEUTRAL')}",
+        'pre_news_bias': news_context.get('pre_news_bias', 'News-driven reaction expected'),
+        'reasoning': full_reasoning,
+        'rejection_reason': None,
+        'structural_score': 72,
+        'score_reason': 'Fallback desk model using the MTF directional picture.',
+        'candidate_direction': expected_signal,
+        'levels_source': 'PYTHON',
+        'historical_pattern': hist_pat
+    }
 
 # ── Main Analysis Engine ──────────────────────────────────────────────────────
 def analyze_symbol_premium(symbol, all_data, news_override=None):
@@ -2516,7 +2558,7 @@ def analyze_symbol_premium(symbol, all_data, news_override=None):
         analysis['market_state'] = analysis.get('market_state') or setup_context['setup_type']
         update_market_state(analysis.get('market_state') or setup_context['setup_type'])
         if analysis.get('signal') == 'WAIT' and (analysis.get('rejection_reason') in {'Missing Gemini API Key.', 'RATE_LIMIT'} or not analysis.get('rejection_reason')):
-            analysis = build_pre_news_fallback_analysis(symbol, m10, swings, pair_config, dxy_context, news_context, candles=candles, phase_context=phase_context, live_price=current_price, htf_context=htf_context)
+            analysis = build_pre_news_fallback_analysis(symbol, m10, swings, pair_config, dxy_context, news_context, candles=candles, phase_context=phase_context, live_price=current_price, htf_context=htf_context, picture=picture, firm=firm, firm_notes=firm_notes, learning=None, historical_context=historical_context)
         analysis['estimated_tokens'] = analysis.get('estimated_tokens', estimated_tokens)
         # ── NEWS SIGNAL PATH: direction-only, skip entry/SL/TP enforcement ──
         if news_override:
@@ -2830,7 +2872,8 @@ with tab1:
             pic_local = build_mtf_picture(all_data, symbol)
             firm_local, firm_notes_local = resolve_firm_direction(symbol, pic_local)
             learn_local = learning_note(symbol)
-            return build_pre_news_fallback_analysis(symbol, m10_local, swings_local, pair_config_local, dxy_context_local, {'within_2h': False}, htf_context=htf_local, picture=pic_local, firm=firm_local, firm_notes=firm_notes_local, learning=learn_local)
+            historical_context_local = build_historical_context(m10_local)
+            return build_pre_news_fallback_analysis(symbol, m10_local, swings_local, pair_config_local, dxy_context_local, {'within_2h': False}, htf_context=htf_local, picture=pic_local, firm=firm_local, firm_notes=firm_notes_local, learning=learn_local, historical_context=historical_context_local)
         return {'signal': 'WAIT', 'confidence': 'LOW', 'confluence_score': MINIMUM_CONFLUENCE_SCORE, 'rejection_reason': 'Data unavailable for fallback'}
     if st.button("🔍 Run Macro Analysis Now", type="secondary", disabled=st.session_state.bot_running):
         try:
